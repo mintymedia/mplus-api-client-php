@@ -2,7 +2,7 @@
 
 class MplusQAPIclient
 {
-  const CLIENT_VERSION  = '1.9.1';
+  const CLIENT_VERSION  = '1.11.0';
   
 
   var $MIN_API_VERSION_MAJOR = 0;
@@ -1094,16 +1094,16 @@ class MplusQAPIclient
 
   //----------------------------------------------------------------------------
 
-  public function getExchangeRateHistory($sinceStockId, $attempts=0)
+  public function getExchangeRateHistory($sinceHistoryId, $attempts=0)
   {
     try {
-      $result = $this->client->getExchangeRateHistory($this->parser->convertGetExchangeRateHistoryRequest($sinceStockId));
+      $result = $this->client->getExchangeRateHistory($this->parser->convertGetExchangeRateHistoryRequest($sinceHistoryId));
       return $this->parser->parseGetExchangeRateHistoryResult($result);
     } catch (SoapFault $e) {
       $msg = $e->getMessage();
       if (false !== stripos($msg, 'Could not connect to host') and $attempts < 3) {
         sleep(1);
-        return $this->getExchangeRateHistory($sinceStockId, $attempts+1);
+        return $this->getExchangeRateHistory($sinceHistoryId, $attempts+1);
       } else {
         throw new MplusQAPIException('SoapFault occurred: '.$msg, 0, $e);
       }
@@ -1111,6 +1111,26 @@ class MplusQAPIclient
       throw new MplusQAPIException('Exception occurred: '.$e->getMessage(), 0, $e);
     }
   } // END getExchangeRateHistory()
+
+  //----------------------------------------------------------------------------
+
+  public function updateExchangeRate($exchangeRates, $attempts=0)
+  {
+    try {
+      $result = $this->client->updateExchangeRate($this->parser->convertUpdateExchangeRateRequest($exchangeRates));
+      return $this->parser->parseUpdateExchangeRateResult($result);
+    } catch (SoapFault $e) {
+      $msg = $e->getMessage();
+      if (false !== stripos($msg, 'Could not connect to host') and $attempts < 3) {
+        sleep(1);
+        return $this->updateExchangeRate($exchangeRates, $attempts+1);
+      } else {
+        throw new MplusQAPIException('SoapFault occurred: '.$msg, 0, $e);
+      }
+    } catch (Exception $e) {
+      throw new MplusQAPIException('Exception occurred: '.$e->getMessage(), 0, $e);
+    }
+  } // END updateExchangeRate()
 
   //----------------------------------------------------------------------------
 
@@ -1878,10 +1898,10 @@ class MplusQAPIclient
 
   //----------------------------------------------------------------------------
 
-  public function getReceipts($syncMarker, $fromFinancialDate, $throughFinancialDate, $branchNumbers=null, $employeeNumbers=null, $relationNumbers=null, $articleNumbers=null, $articleTurnoverGroups=null, $articlePluNumbers=null, $articleBarcodes=null, $supplierRelationNumbers=null, $syncMarkerLimit=null, $attempts=0)
+  public function getReceipts($syncMarker, $fromFinancialDate, $throughFinancialDate, $branchNumbers=null, $employeeNumbers=null, $relationNumbers=null, $articleNumbers=null, $articleTurnoverGroups=null, $articlePluNumbers=null, $articleBarcodes=null, $supplierRelationNumbers=null, $syncMarkerLimit=null, $includeOrderReferences=null, $attempts=0)
   {
     try {
-      $result = $this->client->getReceipts($this->parser->convertGetReceiptsRequest($syncMarker, $syncMarkerLimit, $fromFinancialDate, $throughFinancialDate, $branchNumbers, $employeeNumbers, $relationNumbers, $articleNumbers, $articleTurnoverGroups, $articlePluNumbers, $articleBarcodes, $supplierRelationNumbers));
+      $result = $this->client->getReceipts($this->parser->convertGetReceiptsRequest($syncMarker, $syncMarkerLimit, $fromFinancialDate, $throughFinancialDate, $branchNumbers, $employeeNumbers, $relationNumbers, $articleNumbers, $articleTurnoverGroups, $articlePluNumbers, $articleBarcodes, $supplierRelationNumbers, $includeOrderReferences));
       return $this->parser->parseGetReceiptsResult($result);
     } catch (SoapFault $e) {
       $msg = $e->getMessage();
@@ -4375,30 +4395,51 @@ class MplusQAPIDataParser
 
   //----------------------------------------------------------------------------
 
+  public function parseExchangeRateHistoryList($soapExchangeRateHistory)
+  {
+    $exchangeRateHistory = objectToArray($soapExchangeRateHistory);
+    foreach ($exchangeRateHistory as $idx => $erh) {
+      $erh['timestamp'] = $this->parseMplusDateTime($erh['timestamp']);
+      if (isset($erh['buyPriceOld'])) {
+        $erh['buyPriceOld'] = from_quantity_and_decimal_places($erh['buyPriceOld'], isset($erh['buyPriceDecimalPlacesOld'])?$erh['buyPriceDecimalPlacesOld']:0);
+        unset($erh['buyPriceDecimalPlacesOld']);
+      }
+      if (isset($erh['buyPriceNew'])) {
+        $erh['buyPriceNew'] = from_quantity_and_decimal_places($erh['buyPriceNew'], isset($erh['buyPriceDecimalPlacesNew'])?$erh['buyPriceDecimalPlacesNew']:0);
+        unset($erh['buyPriceDecimalPlacesNew']);
+      }
+      if (isset($erh['sellPriceOld'])) {
+        $erh['sellPriceOld'] = from_quantity_and_decimal_places($erh['sellPriceOld'], isset($erh['sellPriceDecimalPlacesOld'])?$erh['sellPriceDecimalPlacesOld']:0);
+        unset($erh['sellPriceDecimalPlacesOld']);
+      }
+      if (isset($erh['sellPriceNew'])) {
+        $erh['sellPriceNew'] = from_quantity_and_decimal_places($erh['sellPriceNew'], isset($erh['sellPriceDecimalPlacesNew'])?$erh['sellPriceDecimalPlacesNew']:0);
+        unset($erh['sellPriceDecimalPlacesNew']);
+      }
+      $exchangeRateHistory[$idx] = $erh;
+    }
+    return $exchangeRateHistory;
+  } // END parseExchangeRateHistoryList()
+
+  //----------------------------------------------------------------------------
+
   public function parseGetExchangeRateHistoryResult($soapGetExchangeRateHistoryResult) {
     $exchangeRateHistory = array();
     if (isset($soapGetExchangeRateHistoryResult->exchangeRateHistoryList->exchangeRateHistory)) {
-      $soapExchangeRateHistory = $soapGetExchangeRateHistoryResult->exchangeRateHistoryList->exchangeRateHistory;
-      $exchangeRateHistory = objectToArray($soapExchangeRateHistory);
-      foreach ($exchangeRateHistory as $idx => $erh) {
-        $erh['timestamp'] = $this->parseMplusDateTime($erh['timestamp']);
-        if (isset($erh['buyPriceOld'])) {
-          $erh['buyPriceOld'] = from_quantity_and_decimal_places($erh['buyPriceOld'], isset($erh['buyPriceDecimalPlacesOld'])?$erh['buyPriceDecimalPlacesOld']:0);
-        }
-        if (isset($erh['buyPriceNew'])) {
-          $erh['buyPriceNew'] = from_quantity_and_decimal_places($erh['buyPriceNew'], isset($erh['buyPriceDecimalPlacesNew'])?$erh['buyPriceDecimalPlacesNew']:0);
-        }
-        if (isset($erh['sellPriceOld'])) {
-          $erh['sellPriceOld'] = from_quantity_and_decimal_places($erh['sellPriceOld'], isset($erh['sellPriceDecimalPlacesOld'])?$erh['sellPriceDecimalPlacesOld']:0);
-        }
-        if (isset($erh['sellPriceNew'])) {
-          $erh['sellPriceNew'] = from_quantity_and_decimal_places($erh['sellPriceNew'], isset($erh['sellPriceDecimalPlacesNew'])?$erh['sellPriceDecimalPlacesNew']:0);
-        }
-        $exchangeRateHistory[$idx] = $erh;
-      }
+      $exchangeRateHistory = $this->parseExchangeRateHistoryList($soapGetExchangeRateHistoryResult->exchangeRateHistoryList->exchangeRateHistory);
     }
     return $exchangeRateHistory;
   } // END parseGetExchangeRateHistoryResult()
+
+  //----------------------------------------------------------------------------
+
+  public function parseUpdateExchangeRateResult($soapUpdateExchangeRateResult) {
+    $exchangeRateHistory = array();
+    if (isset($soapUpdateExchangeRateResult->exchangeRateHistoryList->exchangeRateHistory)) {
+      $exchangeRateHistory = $this->parseExchangeRateHistoryList($soapUpdateExchangeRateResult->exchangeRateHistoryList->exchangeRateHistory);
+    }
+    return $exchangeRateHistory;
+  } // END parseUpdateExchangeRateResult()
 
   //----------------------------------------------------------------------------
 
@@ -4635,7 +4676,12 @@ class MplusQAPIDataParser
   
   public function parseRelationPoints($soapRelationPoints)
   {
-    return objectToArray($soapRelationPoints->relationPointsLst);
+    if (isset($soapRelationPoints->relationPointsLst)) {
+        return objectToArray($soapRelationPoints->relationPointsLst);
+    }
+    else {
+        return array();
+    }
   }  
   
   //----------------------------------------------------------------------------
@@ -5260,7 +5306,7 @@ class MplusQAPIDataParser
 
   //----------------------------------------------------------------------------
 
-  public function convertGetReceiptsRequest($syncMarker, $syncMarkerLimit, $fromFinancialDate, $throughFinancialDate, $branchNumbers, $employeeNumbers, $relationNumbers, $articleNumbers, $articleTurnoverGroups, $articlePluNumbers, $articleBarcodes, $supplierRelationNumbers)
+  public function convertGetReceiptsRequest($syncMarker, $syncMarkerLimit, $fromFinancialDate, $throughFinancialDate, $branchNumbers, $employeeNumbers, $relationNumbers, $articleNumbers, $articleTurnoverGroups, $articlePluNumbers, $articleBarcodes, $supplierRelationNumbers, $includeOrderReferences)
   {
     $fromFinancialDate = is_null($fromFinancialDate)?null:$this->convertMplusDate($fromFinancialDate, 'fromFinancialDate');
     $throughFinancialDate = is_null($throughFinancialDate)?null:$this->convertMplusDate($throughFinancialDate, 'throughFinancialDate');
@@ -5308,6 +5354,14 @@ class MplusQAPIDataParser
         $supplierRelationNumbers = array($supplierRelationNumbers);
       }
       $request['supplierRelationNumbers'] = array_values($supplierRelationNumbers);
+    }
+
+    if (!is_null($includeOrderReferences)) {
+      if (is_bool($includeOrderReferences)) {
+        $request['includeOrderReferences'] = $includeOrderReferences;
+      } else {
+        throw new MplusQAPIException('Supplied value for `includeOrderReferences` is not a valid boolean.');
+      }
     }
 
     $object = arrayToObject(array('request'=>$request));
@@ -6150,15 +6204,33 @@ class MplusQAPIDataParser
   
   //----------------------------------------------------------------------------
 
-  public function convertGetExchangeRateHistoryRequest($sinceStockId)
+  public function convertGetExchangeRateHistoryRequest($sinceHistoryId)
   {
     $array = array('request'=>array());
-    if ( ! is_null($sinceStockId) and ! empty($sinceStockId)) {
-      $array['request']['sinceStockId'] = $sinceStockId;
+    if ( ! is_null($sinceHistoryId) and ! empty($sinceHistoryId)) {
+      $array['request']['sinceHistoryId'] = $sinceHistoryId;
     }
     $object = arrayToObject($array);
     return $object;
   } // END convertGetExchangeRateHistoryRequest()
+
+  //----------------------------------------------------------------------------
+
+  public function convertUpdateExchangeRateRequest($exchangeRates)
+  {
+    $array = array('request'=>array('exchangeRateList'=>array('exchangeRate'=>array())));
+    foreach ($exchangeRates as $exchangeRate) {
+      if (isset($exchangeRate['buyPrice']) and !isset($exchangeRate['buyPriceDecimalPlaces'])) {
+        list($exchangeRate['buyPrice'], $exchangeRate['buyPriceDecimalPlaces']) = get_quantity_and_decimal_places($exchangeRate['buyPrice']);
+      }
+      if (isset($exchangeRate['sellPrice']) and !isset($exchangeRate['sellPriceDecimalPlaces'])) {
+        list($exchangeRate['sellPrice'], $exchangeRate['sellPriceDecimalPlaces']) = get_quantity_and_decimal_places($exchangeRate['sellPrice']);
+      }
+      $array['request']['exchangeRateList']['exchangeRate'][] = $exchangeRate;
+    }
+    $object = arrayToObject($array);
+    return $object;
+  } // END convertUpdateExchangeRateRequest()
 
   //----------------------------------------------------------------------------
 
