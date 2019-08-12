@@ -2,7 +2,7 @@
 
 class MplusQAPIclient
 {
-  const CLIENT_VERSION  = '1.15.0';
+  const CLIENT_VERSION  = '1.18.2';
   const WSDL_TTL = 300; // 5 min WSDL TTL
 
   var $MIN_API_VERSION_MAJOR = 0;
@@ -94,7 +94,13 @@ class MplusQAPIclient
     {
       throw new MplusQAPIException('MplusQAPIClient needs the JSON PHP extension.');
     }
-    if (PHP_INT_MAX <= 2147483647) {
+    $ignore64BitWarning = false;
+    if (PHP_INT_MAX > 2147483647) {
+      $ignore64BitWarning = true;
+    } elseif (!is_null($params) and isset($params['ignore64BitWarning']) and $params['ignore64BitWarning']) {
+      $ignore64BitWarning = true;
+    }
+    if (!$ignore64BitWarning) {
       throw new MplusQAPIException(sprintf('Your PHP_INT_MAX is %d. MplusQAPIClient needs to run in a 64-bit system.', PHP_INT_MAX));
     }
 
@@ -102,13 +108,27 @@ class MplusQAPIclient
     $this->parser->setConvertToTimestamps($this->convertToTimestamps);
 
     if ( ! is_null($params)) {
-      $this->setApiServer($params['apiServer']);
-      $this->setApiPort($params['apiPort']);
-      $this->setApiPath($params['apiPath']);
-      $this->setApiFingerprint($params['apiFingerprint']);
-      $this->setApiIdent($params['apiIdent']);
-      $this->setApiSecret($params['apiSecret']);
-      $this->initClient();
+      if (isset($params['apiServer'])) {
+        $this->setApiServer($params['apiServer']);
+      }
+      if (isset($params['apiPort'])) {
+        $this->setApiPort($params['apiPort']);
+      }
+      if (isset($params['apiPath'])) {
+        $this->setApiPath($params['apiPath']);
+      }
+      if (isset($params['apiFingerprint'])) {
+        $this->setApiFingerprint($params['apiFingerprint']);
+      }
+      if (isset($params['apiIdent'])) {
+        $this->setApiIdent($params['apiIdent']);
+      }
+      if (isset($params['apiSecret'])) {
+        $this->setApiSecret($params['apiSecret']);
+      }
+      if (isset($params['apiServer']) and isset($params['apiPort']) and isset($params['apiIdent']) and isset($params['apiSecret'])) {
+        $this->initClient();
+      }
     }
   }
 
@@ -918,6 +938,26 @@ class MplusQAPIclient
       throw new MplusQAPIException('Exception occurred: '.$e->getMessage(), 0, $e);
     }
   } // END getTableListV2()
+
+  //----------------------------------------------------------------------------
+
+  public function getCurrentTableOrders($request=null, $attempts=0)
+  {
+    try {
+      $result = $this->client->getCurrentTableOrders($this->parser->convertGetCurrentTableOrdersRequest($request));
+      return $this->parser->parseGetOrdersResult($result);
+    } catch (SoapFault $e) {
+      $msg = $e->getMessage();
+      if (false !== stripos($msg, 'Could not connect to host') and $attempts < 3) {
+        sleep(1);
+        return $this->getCurrentTableOrders($request, $attempts+1);
+      } else {
+        throw new MplusQAPIException('SoapFault occurred: '.$msg, 0, $e);
+      }
+    } catch (Exception $e) {
+      throw new MplusQAPIException('Exception occurred: '.$e->getMessage(), 0, $e);
+    }
+  }
 
   //----------------------------------------------------------------------------
 
@@ -2554,7 +2594,7 @@ class MplusQAPIclient
       $msg = $e->getMessage();
       if (false !== stripos($msg, 'Could not connect to host') and $attempts < 3) {
         sleep(1);
-        return $this->queueBranchOrder($orderId, $attempts+1);
+        return $this->queueBranchOrder($order, $attempts+1);
       } else {
         throw new MplusQAPIException('SoapFault occurred: '.$msg, 0, $e);
       }
@@ -3175,6 +3215,31 @@ class MplusQAPIclient
       throw new MplusQAPIException('Exception occurred: '.$e->getMessage(), 0, $e);
     }
   } // END deleteActivity()
+
+//----------------------------------------------------------------------------
+public function report($arguments, $attempts = 0)
+{
+    try {
+        if (!is_array($arguments) || !array_key_exists('method', $arguments) || empty($arguments['method'])) {
+            throw new Exception("No method defined for group call : " . __FUNCTION__);
+        }
+        $method = __FUNCTION__ . $arguments['method'];
+        unset($arguments['method']);
+        $parameters = $this->parser->convertReportRequest($method, $arguments);
+        $result = call_user_func(array($this->client, $method), $parameters);
+        return $this->parser->parseReportResult($method, $result);
+    } catch (SoapFault $e) {
+        $msg = $e->getMessage();
+        if (false !== stripos($msg, 'Could not connect to host') and $attempts < 3) {
+            sleep(1);
+            return $this->report($arguments, $attempts + 1);
+        } else {
+            throw new MplusQAPIException('SoapFault occurred: ' . $msg, 0, $e);
+        }
+    } catch (Exception $e) {
+        throw new MplusQAPIException('Exception occurred: ' . $e->getMessage(), 0, $e);
+    }
+} // END report()
 
   //----------------------------------------------------------------------------
 
@@ -5050,6 +5115,8 @@ class MplusQAPIDataParser
       return true;
     } else if (isset($soapUpdateOrderResult->result) and $soapUpdateOrderResult->result == 'UPDATE-ORDER-RESULT-FAILED' and $soapUpdateOrderResult->errorMessage == 'Order not saved because there were no changes in the order.') {
       return true;
+    } else if (isset($soapUpdateOrderResult->result) and $soapUpdateOrderResult->result == 'UPDATE-ORDER-RESULT-NO-CHANGES') {
+      return true;
     } else {
       if ( ! empty($soapUpdateOrderResult->errorMessage)) {
         $this->lastErrorMessage = $soapUpdateOrderResult->errorMessage;
@@ -5099,6 +5166,8 @@ class MplusQAPIDataParser
         return true;
       }
     } else if (isset($soapSaveOrderResult->result) and $soapSaveOrderResult->result == 'SAVE-ORDER-RESULT-FAILED' and $soapSaveOrderResult->errorMessage == 'Order not saved because there were no changes in the order.') {
+      return true;
+    } else if (isset($soapSaveOrderResult->result) and $soapSaveOrderResult->result == 'SAVE-ORDER-RESULT-NO-CHANGES') {
       return true;
     } else {
       if ( ! empty($soapSaveOrderResult->errorMessage)) {
@@ -5517,6 +5586,53 @@ class MplusQAPIDataParser
     }
     return $result;
   } // END parseDeleteActivityResult()
+
+  //----------------------------------------------------------------------------
+  public function parseReportResult($method, $soapReportResult)
+  {
+      $data = null;
+      switch ($method) {
+          case "reportTurnover":
+          case "reportTurnoverByBranch":
+          case "reportTurnoverByEmployee":
+          case "reportTurnoverByTurnoverGroup":
+          case "reportTurnoverByArticle":
+          case "reportTurnoverByActivity":
+              $data = array();
+              if (isset($soapReportResult->turnoverList->turnover)) {
+                  foreach ($soapReportResult->turnoverList->turnover as $soapTurnover) {
+                      $data[] = $soapTurnover;
+                  }
+              }
+              break;
+          case "reportHoursByEmployee":
+              $data = array();
+              if (isset($soapReportResult->hoursList->hours)) {
+                  foreach ($soapReportResult->hoursList->hours as $soapHours) {
+                      $data[] = $soapHours;
+                  }
+              }
+              break;
+          case "reportPaymentMethods":
+              $data = array();
+              if (isset($soapReportResult->paymentMethodsList->paymentMethods)) {
+                  foreach ($soapReportResult->paymentMethodsList->paymentMethods as $soapPaymentMethods) {
+                      $data[] = $soapPaymentMethods;
+                  }
+              }
+              break;
+          case "reportTables":
+              $data = array();
+              if (isset($soapReportResult->tablesList->tables)) {
+                  foreach ($soapReportResult->tablesList->tables as $soapTable) {
+                      $data[] = $soapTable;
+                  }
+              }
+              break;
+      }
+      return $data;
+  } // END parseReportResult()
+
 
   //----------------------------------------------------------------------------
 
@@ -6484,8 +6600,8 @@ class MplusQAPIDataParser
 
   public function convertPayTableOrderRequest($terminal, $order, $paymentList, $keepTableName, $releaseTable)
   {
+    $order = $this->convertOrder($order, $terminal);
     $terminal = $this->convertTerminal($terminal);
-    $order = $this->convertOrder($order);
     $array = array(
       'terminal'=>$terminal->terminal,
       'request'=>array(
@@ -6502,8 +6618,8 @@ class MplusQAPIDataParser
 
   public function convertPrepayTableOrderRequest($terminal, $order, $paymentList, $prepayAmount, $releaseTable)
   {
+    $order = $this->convertOrder($order, $terminal);
     $terminal = $this->convertTerminal($terminal);
-    $order = $this->convertOrder($order);
     $array = array(
       'terminal'=>$terminal->terminal,
       'request'=>array(
@@ -7070,6 +7186,17 @@ class MplusQAPIDataParser
 
   //----------------------------------------------------------------------------
 
+  public function convertGetCurrentTableOrdersRequest($request)
+  {
+    if (is_null($request)) {
+      $request = [];
+    }
+    $object = arrayToObject(['request'=>$request]);
+    return $object;
+  }
+
+  //----------------------------------------------------------------------------
+
   public function convertCreateOrderV2Request($order, $applySalesAndActions, $applySalesPrices, $applyPriceGroups)
   {
     $order = $this->convertOrder($order);
@@ -7089,7 +7216,7 @@ class MplusQAPIDataParser
 
   //----------------------------------------------------------------------------
 
-  public function convertOrder($order, $as_array=false)
+  public function convertOrder($order, $terminal=null, $as_array=false)
   {
     if ( ! isset($order['orderId']) or is_null($order['orderId'])) {
       $order['orderId'] = '';
@@ -7100,6 +7227,8 @@ class MplusQAPIDataParser
     if ( ! isset($order['entryBranchNumber'])) {
       if (isset($order['financialBranchNumber'])) {
         $order['entryBranchNumber'] = $order['financialBranchNumber'];
+      } elseif (!is_null($terminal) and isset($terminal['branchNumber'])) {
+        $order['entryBranchNumber'] = $terminal['branchNumber'];
       } else {
         $order['entryBranchNumber'] = 0;
       }
@@ -7130,6 +7259,8 @@ class MplusQAPIDataParser
     if ( ! isset($order['financialBranchNumber'])) {
       if (isset($order['entryBranchNumber'])) {
         $order['financialBranchNumber'] = $order['entryBranchNumber'];
+      } elseif (!is_null($terminal) and isset($terminal['branchNumber'])) {
+        $order['financialBranchNumber'] = $terminal['branchNumber'];
       } else {
         $order['financialBranchNumber'] = 0;
       }
@@ -7605,6 +7736,150 @@ class MplusQAPIDataParser
     }
   } // END convertMplusDateTime()
 
+  private function fieldExistsInArray($fieldName, $array, $required = true)
+  {
+      if (!array_key_exists($fieldName, $array) || $array[$fieldName] === null) {
+          if ($required) {
+              throw new \Exception("Field : $fieldName does not exists in request");
+          } else {
+              return false;
+          }
+      }
+      return true;
+  }
+
+//----------------------------------------------------------------------------
+
+  public function convertReportRequest($method, $arguments)
+  {
+      $fields = array(
+          'reportTurnover' => array(
+              'required' => array(
+                  'fromFinancialDate', 'throughFinancialDate',
+              ),
+              'optional' => array(
+                  'branchNumbers', 'turnoverGroups', 'perHour',
+              ),
+          ),
+          'reportTurnoverByBranch' => array(
+              'required' => array(
+                  'fromFinancialDate', 'throughFinancialDate',
+              ),
+              'optional' => array(
+                  'branchNumbers', 'perHour',
+              ),
+          ),
+          'reportTurnoverByEmployee' => array(
+              'required' => array(
+                  'fromFinancialDate', 'throughFinancialDate',
+              ),
+              'optional' => array(
+                  'branchNumbers', 'employeeNumbers', 'perHour',
+              ),
+          ),
+          'reportTurnoverByActivity' => array(
+              'required' => array(
+                  'fromFinancialDate', 'throughFinancialDate',
+              ),
+              'optional' => array(
+                  'branchNumbers', 'activityNumbers',
+              ),
+          ),
+          'reportTurnoverByTurnoverGroup' => array(
+              'required' => array(
+                  'fromFinancialDate', 'throughFinancialDate',
+              ),
+              'optional' => array(
+                  'branchNumbers', 'turnoverGroups', 'perHour',
+              ),
+          ),
+          'reportTurnoverByArticle' => array(
+              'required' => array(
+                  'fromFinancialDate', 'throughFinancialDate',
+              ),
+              'optional' => array(
+                  'branchNumbers', 'turnoverGroups', 'articleNumbers',
+              ),
+          ),
+          'reportHoursByEmployee' => array(
+              'required' => array(
+                  'fromFinancialDate', 'throughFinancialDate',
+              ),
+              'optional' => array(
+                  'branchNumbers', 'employeeNumbers',
+              ),
+          ),
+          'reportPaymentMethods' => array(
+              'required' => array(
+                  'fromFinancialDate', 'throughFinancialDate',
+              ),
+              'optional' => array(
+                  'branchNumbers', 'perHour',
+              ),
+          ),
+          'reportTables' => array(
+              'required' => array(
+              ),
+              'optional' => array(
+                  'branchNumbers',
+              ),
+          ),
+      );
+      $request = [];
+      if (array_key_exists($method, $fields)) {
+          foreach ($fields[$method] as $type => $callFields) {
+              foreach ($callFields as $callField) {
+                  $required = $type == 'required' ? true : false;
+                  if ($this->fieldExistsInArray($callField, $arguments, $required)) {
+                      switch ($callField) {
+                          case "fromFinancialDate":
+                          case "throughFinancialDate":
+                              $request['dateFilter'][$callField] = $arguments[$callField];
+                              break;
+                          case "branchNumbers":
+                              if (!is_array($arguments[$callField])) {
+                                  $arguments[$callField] = array($arguments[$callField]);
+                              }
+                              $request['branchFilter'] = $arguments[$callField];
+                              break;
+                          case "turnoverGroups":
+                              if (!is_array($arguments[$callField])) {
+                                  $arguments[$callField] = array($arguments[$callField]);
+                              }
+                              $request['turnoverGroupFilter'] = $callField;
+                              break;
+                          case "employeeNumbers":
+                              if (!is_array($arguments[$callField])) {
+                                  $arguments[$callField] = array($arguments[$callField]);
+                              }
+                              $request['employeeFilter'] = $arguments[$callField];
+                              break;
+                          case "articleNumbers":
+                              if (!is_array($arguments[$callField])) {
+                                  $arguments[$callField] = array($arguments[$callField]);
+                              }
+                              $request['articleFilter'] = $arguments[$callField];
+                              break;
+                          case "activityNumbers":
+                              if (!is_array($arguments[$callField])) {
+                                  $arguments[$callField] = array($arguments[$callField]);
+                              }
+                              $request['activityFilter'] = $arguments[$callField];
+                              break;
+                          case "perHour":
+                              $request['perHour'] = $arguments['perHour'] === true ? true : false;
+                              break;
+                      }
+
+                  }
+              }
+          }
+      }
+
+      $object = arrayToObject(array('request' => $request));
+      return $object;
+  } // END convertReportRequest()
+
   //----------------------------------------------------------------------------
 
   public function parseMplusDate($mplus_date)
@@ -7755,8 +8030,8 @@ class MplusQAPIDataParser
 
   public function convertSaveTableOrder($terminal, $order)
   {
+    $order = $this->convertOrder($order, $terminal);
     $terminal = $this->convertTerminal($terminal);
-    $order = $this->convertOrder($order);
     $object = arrayToObject(array(
       'terminal'=>$terminal->terminal,
       'order'=>$order->order,
@@ -7768,8 +8043,8 @@ class MplusQAPIDataParser
 
   public function convertMoveTableOrderRequest($terminal, $order, $tableNumber)
   {
+    $order = $this->convertOrder($order, $terminal);
     $terminal = $this->convertTerminal($terminal);
-    $order = $this->convertOrder($order);
     $object = arrayToObject(array(
       'terminal'=>$terminal->terminal,
       'order'=>$order->order,
